@@ -3,10 +3,9 @@ import time
 from sqlalchemy.orm import Session
 
 from app.db.session import SessionLocal
-from app.models.entities import IngestionJob, DatasetRow, ArticleFetch, ExtractedArticle, ArticleAnalysis, BatchReport
+from app.models.entities import IngestionJob, DatasetRow, ArticleFetch, ExtractedArticle
 from app.services.extraction import extract_article, classify_failure
-from app.services.analysis import analyze_article, build_batch_report, report_to_markdown
-from app.services.parsing import validate_url, normalize_title
+from app.services.parsing import validate_url
 
 
 def append_log(job: IngestionJob, message: str):
@@ -21,29 +20,35 @@ def run_job(job_id: int):
     job = db.get(IngestionJob, job_id)
     if not job:
         return
+
     job.status = "running"
-    append_log(job, "Job started")
+    append_log(job, "Extraction job started")
     db.commit()
 
     rows = db.query(DatasetRow).filter(DatasetRow.dataset_id == job.dataset_id).all()
-    selected = [r for r in rows if r.normalized_date and job.start_date <= r.normalized_date <= job.end_date]
+    if job.start_date and job.end_date:
+        selected = [r for r in rows if r.normalized_date and job.start_date <= r.normalized_date <= job.end_date]
+    else:
+        selected = rows
+
     job.total_rows = len(selected)
     db.commit()
 
-    analyses: list[dict] = []
     for row in selected:
         url = row.normalized_url
         if not validate_url(url):
             fetch = ArticleFetch(job_id=job.id, dataset_row_id=row.id, original_url=url or "", fetch_status="failed", extraction_status="failed", failure_reason="invalid_url")
-            db.add(fetch)
+            db.merge(fetch)
             job.failure_count += 1
             job.processed_rows += 1
             db.commit()
             continue
 
-        fetch = ArticleFetch(job_id=job.id, dataset_row_id=row.id, original_url=url, fetch_status="pending")
-        db.add(fetch)
-        db.commit()
+        fetch = db.query(ArticleFetch).filter(ArticleFetch.dataset_row_id == row.id).first()
+        if not fetch:
+            fetch = ArticleFetch(job_id=job.id, dataset_row_id=row.id, original_url=url, fetch_status="pending")
+            db.add(fetch)
+            db.commit()
 
         success = False
         for attempt in range(3):
@@ -57,20 +62,20 @@ def run_job(job_id: int):
                     fetch.failure_reason = "extraction_empty"
                     break
                 fetch.extraction_status = "success"
-                article = ExtractedArticle(
-                    fetch_id=fetch.id,
-                    extracted_title=result["title"] or row.normalized_title,
-                    raw_text_length=len(result["text"]),
-                    article_text=result["text"],
-                )
-                db.add(article)
-                db.commit()
 
-                analysis_json = analyze_article(result["text"], title=result["title"] or row.normalized_title)
-                analysis = ArticleAnalysis(article_id=article.id, model_name="responses-api", analysis_json=analysis_json, relevance_score=analysis_json.get("relevance_score"))
-                db.add(analysis)
+                existing_article = db.query(ExtractedArticle).filter(ExtractedArticle.fetch_id == fetch.id).first()
+                if existing_article:
+                    existing_article.extracted_title = result["title"] or row.normalized_title
+                    existing_article.raw_text_length = len(result["text"])
+                    existing_article.article_text = result["text"]
+                else:
+                    db.add(ExtractedArticle(
+                        fetch_id=fetch.id,
+                        extracted_title=result["title"] or row.normalized_title,
+                        raw_text_length=len(result["text"]),
+                        article_text=result["text"],
+                    ))
                 db.commit()
-                analyses.append(analysis_json)
                 success = True
                 break
             except Exception as exc:
@@ -80,6 +85,7 @@ def run_job(job_id: int):
                 fetch.failure_reason = classify_failure(exc=exc)
                 db.commit()
                 time.sleep(1.5 * (attempt + 1))
+
         job.processed_rows += 1
         if success:
             job.success_count += 1
@@ -88,10 +94,7 @@ def run_job(job_id: int):
         append_log(job, f"Processed row {row.id}: {'success' if success else 'failed'}")
         db.commit()
 
-    report_json = build_batch_report(analyses, {"total": job.total_rows, "success": job.success_count, "failed": job.failure_count})
-    markdown = report_to_markdown(report_json)
-    db.add(BatchReport(job_id=job.id, report_json=report_json, markdown_report=markdown))
     job.status = "completed"
-    append_log(job, "Job completed")
+    append_log(job, "Extraction job completed")
     db.commit()
     db.close()

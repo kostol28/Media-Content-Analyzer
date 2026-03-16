@@ -1,32 +1,40 @@
-# Media Content Analyzer (v1)
+# Media Content Analyzer (Post-Curation v1)
 
-Production-oriented local-first internal web app for PR/media coverage ingestion, auditable extraction, and qualitative AI analysis.
+Internal local-first app for PR/media analysts who already curate relevant coverage upstream and now need automated text extraction, review controls, and final-corpus qualitative analysis.
+
+## Post-curation workflow
+
+1. Intake cleaned coverage via **CSV upload** or **paste URLs**.
+2. Create article records.
+3. Run extraction pipeline across all records (optional date filter for CSVs).
+4. Review extraction results in a table with status + text source visibility.
+5. Add manual text only where extraction is missing/incomplete.
+6. Exclude/remove articles and restore later.
+7. Run AI analysis only on final included rows with usable text.
 
 ## Architecture
 
-- **Frontend:** Next.js + TypeScript single-page analyst workflow UI (`frontend/`).
-- **Backend API:** FastAPI + SQLAlchemy (`backend/`).
-- **Worker model:** DB-backed jobs processed in background threads (upgrade path to Celery/RQ).
-- **Database:** SQLite by default via `DATABASE_URL`, abstracted for PostgreSQL migration.
-- **Extraction pipeline:** requests + trafilatura with BeautifulSoup fallback, retries/backoff, per-domain throttling.
-- **AI analysis:** OpenAI Responses API with strict JSON schema; safe local fallback when key missing.
+- **Frontend:** Next.js TypeScript (`frontend/`) single-page analyst workflow.
+- **Backend:** FastAPI + SQLAlchemy (`backend/`).
+- **Jobs:** DB-backed extraction jobs via background thread.
+- **Database:** SQLite default (easy local setup), swappable to PostgreSQL by `DATABASE_URL`.
+- **Extraction:** `requests` + `trafilatura` first, BeautifulSoup fallback, retries/backoff, per-domain throttling.
+- **Analysis:** OpenAI Responses API strict JSON schema; fallback mode without key.
 
-## Features implemented
+## Key features
 
-- CSV dataset upload with detected columns.
-- Column mapping UI and normalization to canonical fields.
-- Date range filtering and asynchronous ingestion job.
-- URL validation, redirects, HTTP status capture, extraction status, failure classification.
-- Audit-friendly storage of fetch and extraction metadata.
-- Structured article-level analysis JSON (theme/sentiment/narrative/messaging fields).
-- Batch-level aggregate report with theme/sentiment trend summaries.
-- Analyst workflow UI: preview, mapping, run job, progress dashboard, results/failures, article detail.
-- Export endpoints for enriched CSV, failures CSV, aggregate JSON, markdown report.
-- Sample fixture CSV and unit tests for parsing/report helpers.
+- Intake from CSVs or pasted URLs.
+- Column detection/mapping for CSV inputs.
+- Auditable fetch/extraction metadata (`original_url`, `final_url`, HTTP status, failures).
+- Review-table controls for include/exclude/restore and manual text override.
+- Text source label per row: `extracted`, `manual`, or `missing`.
+- Corpus readiness counters before analysis (included/excluded/usable/missing).
+- Final-corpus-only analysis + aggregate reporting.
+- Exports: enriched CSV, failures CSV, aggregate JSON, markdown report.
 
-## Quickstart (local)
+## Local setup
 
-### 1) Backend
+### Backend
 
 ```bash
 cd backend
@@ -36,7 +44,7 @@ pip install -r requirements.txt
 uvicorn app.main:app --reload --port 8000
 ```
 
-### 2) Frontend
+### Frontend
 
 ```bash
 cd frontend
@@ -44,23 +52,21 @@ npm install
 npm run dev
 ```
 
-### 3) Open app
-
-- Frontend: http://localhost:3000
+Open:
+- UI: http://localhost:3000
 - API docs: http://localhost:8000/docs
 
-Copy `.env.example` to `.env` and set `OPENAI_API_KEY` to enable real LLM analysis.
+Set envs from `.env.example`.
 
-## Testing
+## Tests
 
 ```bash
-cd backend
-PYTHONPATH=. pytest
+PYTHONPATH=backend python -m pytest backend/tests
+python -m compileall backend/app
 ```
 
-## Notes / tradeoffs in v1
+## Tradeoffs in this v1
 
-- Worker uses in-process background thread (simple local-first). For production scale, move to dedicated queue workers.
-- JS-heavy page fallback (Playwright) is not wired yet; failures can be labeled `js_required` in a future pass.
-- Aggregate report is concise but extensible; schema hooks exist for custom client taxonomies.
-- Current frontend is a single-page flow for speed; can be split into route-based screens later.
+- In-process background worker (simple local-first), intended to migrate to queue workers later.
+- No Playwright JS-page fallback yet.
+- Single-page frontend for speed; can be split into route-based pages later.

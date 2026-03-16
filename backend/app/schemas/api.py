@@ -12,14 +12,26 @@ class ColumnMappingRequest(BaseModel):
     mapping: dict[str, str]
 
 
+class UrlIntakeRequest(BaseModel):
+    name: str = "pasted_urls"
+    urls: list[str]
+
+
 class RunJobRequest(BaseModel):
-    start_date: datetime
-    end_date: datetime
+    start_date: datetime | None = None
+    end_date: datetime | None = None
 
 
 class JobResponse(BaseModel):
     job_id: int
     status: str
+
+
+class RowReviewUpdate(BaseModel):
+    included: bool
+    exclusion_reason: str | None = None
+    manual_article_text: str | None = None
+    review_notes: str | None = None
 
 
 class AnalysisOutput(BaseModel):
