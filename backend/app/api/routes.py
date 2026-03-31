@@ -1,33 +1,16 @@
 from io import StringIO
 from threading import Thread
-
 import pandas as pd
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import StreamingResponse, JSONResponse
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
-from app.models.entities import (
-    ArticleAnalysis,
-    ArticleFetch,
-    BatchReport,
-    Dataset,
-    DatasetRow,
-    ExtractedArticle,
-    IngestionJob,
-)
-from app.schemas.api import (
-    ColumnMappingRequest,
-    DatasetCreateResponse,
-    JobResponse,
-    RowReviewUpdate,
-    RunJobRequest,
-    UrlIntakeRequest,
-)
+from app.models.entities import Dataset, DatasetRow, IngestionJob, ArticleFetch, ExtractedArticle, ArticleAnalysis, BatchReport
+from app.schemas.api import DatasetCreateResponse, ColumnMappingRequest, UrlIntakeRequest, RunJobRequest, JobResponse, RowReviewUpdate
+from app.services.parsing import normalize_col, parse_date, normalize_title, validate_url
 from app.services.analysis import analyze_article, build_batch_report, report_to_markdown
-from app.services.parsing import normalize_col, normalize_title, parse_date, validate_url
 from app.workers.jobs import run_job
-
 from .csv_utils import read_uploaded_csv
 
 router = APIRouter()
@@ -66,16 +49,9 @@ def row_text_and_source(row: DatasetRow) -> tuple[str | None, str]:
 def upload_dataset(file: UploadFile = File(...), db: Session = Depends(get_db)):
     if not file.filename.endswith(".csv"):
         raise HTTPException(status_code=400, detail="Only CSV supported")
-
     df = read_uploaded_csv(file.file)
     cols = [str(c) for c in df.columns]
-    dataset = Dataset(
-        name=file.filename,
-        original_filename=file.filename,
-        intake_type="csv",
-        detected_columns=cols,
-        column_mapping=auto_map(cols),
-    )
+    dataset = Dataset(name=file.filename, original_filename=file.filename, intake_type="csv", detected_columns=cols, column_mapping=auto_map(cols))
     db.add(dataset)
     db.commit()
     db.refresh(dataset)
@@ -83,18 +59,16 @@ def upload_dataset(file: UploadFile = File(...), db: Session = Depends(get_db)):
     mapping = dataset.column_mapping or {}
     for idx, row in df.iterrows():
         meta = {k: (None if pd.isna(v) else str(v)) for k, v in row.to_dict().items()}
-        db.add(
-            DatasetRow(
-                dataset_id=dataset.id,
-                row_index=int(idx),
-                metadata_json=meta,
-                normalized_url=meta.get(mapping.get("url", "")),
-                normalized_title=normalize_title(meta.get(mapping.get("title", ""))),
-                normalized_source=meta.get(mapping.get("source", "")),
-                normalized_date=parse_date(meta.get(mapping.get("date", ""))),
-                included=True,
-            )
-        )
+        db.add(DatasetRow(
+            dataset_id=dataset.id,
+            row_index=int(idx),
+            metadata_json=meta,
+            normalized_url=meta.get(mapping.get("url", "")),
+            normalized_title=normalize_title(meta.get(mapping.get("title", ""))),
+            normalized_source=meta.get(mapping.get("source", "")),
+            normalized_date=parse_date(meta.get(mapping.get("date", ""))),
+            included=True,
+        ))
     db.commit()
     return DatasetCreateResponse(dataset_id=dataset.id, detected_columns=cols, total_rows=len(df))
 
@@ -102,13 +76,7 @@ def upload_dataset(file: UploadFile = File(...), db: Session = Depends(get_db)):
 @router.post("/datasets/intake-urls", response_model=DatasetCreateResponse)
 def intake_urls(payload: UrlIntakeRequest, db: Session = Depends(get_db)):
     cols = ["URL"]
-    dataset = Dataset(
-        name=payload.name,
-        original_filename="pasted_urls",
-        intake_type="pasted_urls",
-        detected_columns=cols,
-        column_mapping={"url": "URL"},
-    )
+    dataset = Dataset(name=payload.name, original_filename="pasted_urls", intake_type="pasted_urls", detected_columns=cols, column_mapping={"url": "URL"})
     db.add(dataset)
     db.commit()
     db.refresh(dataset)
@@ -117,18 +85,16 @@ def intake_urls(payload: UrlIntakeRequest, db: Session = Depends(get_db)):
         clean = (url or "").strip()
         if not clean:
             continue
-        db.add(
-            DatasetRow(
-                dataset_id=dataset.id,
-                row_index=idx,
-                metadata_json={"URL": clean},
-                normalized_url=clean,
-                normalized_title=None,
-                normalized_source=None,
-                normalized_date=None,
-                included=True,
-            )
-        )
+        db.add(DatasetRow(
+            dataset_id=dataset.id,
+            row_index=idx,
+            metadata_json={"URL": clean},
+            normalized_url=clean,
+            normalized_title=None,
+            normalized_source=None,
+            normalized_date=None,
+            included=True,
+        ))
     db.commit()
     total = db.query(DatasetRow).filter(DatasetRow.dataset_id == dataset.id).count()
     return DatasetCreateResponse(dataset_id=dataset.id, detected_columns=cols, total_rows=total)
@@ -141,12 +107,7 @@ def dataset_preview(dataset_id: int, db: Session = Depends(get_db)):
         raise HTTPException(404, "Dataset not found")
     rows = db.query(DatasetRow).filter(DatasetRow.dataset_id == dataset_id).limit(100).all()
     return {
-        "dataset": {
-            "id": dataset.id,
-            "columns": dataset.detected_columns,
-            "mapping": dataset.column_mapping,
-            "intake_type": dataset.intake_type,
-        },
+        "dataset": {"id": dataset.id, "columns": dataset.detected_columns, "mapping": dataset.column_mapping, "intake_type": dataset.intake_type},
         "rows": [{"id": r.id, **r.metadata_json, "included": r.included} for r in rows],
     }
 
@@ -225,21 +186,19 @@ def list_articles(job_id: int, db: Session = Depends(get_db)):
     for row in rows:
         fetch = row.fetch
         text, source = row_text_and_source(row)
-        output.append(
-            {
-                "row_id": row.id,
-                "original_url": row.normalized_url,
-                "final_url": fetch.final_url if fetch else None,
-                "included": row.included,
-                "exclusion_reason": row.exclusion_reason,
-                "extraction_status": fetch.extraction_status if fetch else "pending",
-                "failure_reason": fetch.failure_reason if fetch else None,
-                "title": (fetch.article.extracted_title if fetch and fetch.article else row.normalized_title),
-                "text_length": len(text) if text else 0,
-                "text_source": source,
-                "review_notes": row.review_notes,
-            }
-        )
+        output.append({
+            "row_id": row.id,
+            "original_url": row.normalized_url,
+            "final_url": fetch.final_url if fetch else None,
+            "included": row.included,
+            "exclusion_reason": row.exclusion_reason,
+            "extraction_status": fetch.extraction_status if fetch else "pending",
+            "failure_reason": fetch.failure_reason if fetch else None,
+            "title": (fetch.article.extracted_title if fetch and fetch.article else row.normalized_title),
+            "text_length": len(text) if text else 0,
+            "text_source": source,
+            "review_notes": row.review_notes,
+        })
     return output
 
 
@@ -306,23 +265,13 @@ def run_corpus_analysis(job_id: int, db: Session = Depends(get_db)):
             fetch.article.analysis.analysis_json = analysis_json
             fetch.article.analysis.relevance_score = analysis_json.get("relevance_score")
         else:
-            db.add(
-                ArticleAnalysis(
-                    article_id=fetch.article.id,
-                    model_name="responses-api",
-                    analysis_json=analysis_json,
-                    relevance_score=analysis_json.get("relevance_score"),
-                )
-            )
+            db.add(ArticleAnalysis(article_id=fetch.article.id, model_name="responses-api", analysis_json=analysis_json, relevance_score=analysis_json.get("relevance_score")))
         analyses.append(analysis_json)
-    report_json = build_batch_report(
-        analyses,
-        {
-            "total": len(rows),
-            "success": len(analyses),
-            "failed": len(rows) - len(analyses),
-        },
-    )
+    report_json = build_batch_report(analyses, {
+        "total": len(rows),
+        "success": len(analyses),
+        "failed": len(rows) - len(analyses),
+    })
     markdown = report_to_markdown(report_json)
     existing = db.query(BatchReport).filter(BatchReport.job_id == job.id).first()
     if existing:
@@ -343,23 +292,19 @@ def export_enriched(job_id: int, db: Session = Depends(get_db)):
         fetch = row.fetch
         text, source = row_text_and_source(row)
         out_row = dict(row.metadata_json)
-        out_row.update(
-            {
-                "included": row.included,
-                "exclusion_reason": row.exclusion_reason,
-                "review_notes": row.review_notes,
-                "original_url": row.normalized_url,
-                "final_url": fetch.final_url if fetch else None,
-                "fetch_status": fetch.fetch_status if fetch else None,
-                "extraction_status": fetch.extraction_status if fetch else None,
-                "failure_reason": fetch.failure_reason if fetch else None,
-                "text_source": source,
-                "article_text": text,
-                "analysis_json": fetch.article.analysis.analysis_json
-                if fetch and fetch.article and fetch.article.analysis
-                else None,
-            }
-        )
+        out_row.update({
+            "included": row.included,
+            "exclusion_reason": row.exclusion_reason,
+            "review_notes": row.review_notes,
+            "original_url": row.normalized_url,
+            "final_url": fetch.final_url if fetch else None,
+            "fetch_status": fetch.fetch_status if fetch else None,
+            "extraction_status": fetch.extraction_status if fetch else None,
+            "failure_reason": fetch.failure_reason if fetch else None,
+            "text_source": source,
+            "article_text": text,
+            "analysis_json": fetch.article.analysis.analysis_json if fetch and fetch.article and fetch.article.analysis else None,
+        })
         out.append(out_row)
     return StreamingResponse(StringIO(pd.DataFrame(out).to_csv(index=False)), media_type="text/csv")
 
@@ -373,13 +318,7 @@ def export_failures(job_id: int, db: Session = Depends(get_db)):
         fetch = row.fetch
         text, source = row_text_and_source(row)
         if source == "missing":
-            failures.append(
-                {
-                    "url": row.normalized_url,
-                    "extraction_status": fetch.extraction_status if fetch else "pending",
-                    "failure_reason": fetch.failure_reason if fetch else "missing_fetch",
-                }
-            )
+            failures.append({"url": row.normalized_url, "extraction_status": fetch.extraction_status if fetch else "pending", "failure_reason": fetch.failure_reason if fetch else "missing_fetch"})
     return StreamingResponse(StringIO(pd.DataFrame(failures).to_csv(index=False)), media_type="text/csv")
 
 
