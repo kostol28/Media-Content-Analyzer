@@ -1,8 +1,9 @@
-from io import BytesIO
+from io import BytesIO, StringIO
+import json
 from threading import Thread
 import pandas as pd
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
-from fastapi.responses import StreamingResponse, JSONResponse
+from fastapi.responses import StreamingResponse, JSONResponse, Response
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
@@ -78,6 +79,26 @@ def read_uploaded_csv(upload: UploadFile) -> pd.DataFrame:
         status_code=400,
         detail="Could not read uploaded CSV. Please export as CSV encoded as UTF-8/UTF-16/UTF-32/Windows-1252 and try again.",
     )
+
+
+def _clean_csv_value(value):
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return None
+    if isinstance(value, (dict, list)):
+        value = json.dumps(value, ensure_ascii=False)
+    if isinstance(value, str):
+        return value.encode("utf-8", errors="replace").decode("utf-8")
+    return value
+
+
+def build_csv_response(rows: list[dict], filename: str) -> Response:
+    df = pd.DataFrame(rows)
+    if not df.empty:
+        df = df.applymap(_clean_csv_value)
+    csv_text = df.to_csv(index=False)
+    csv_bytes = csv_text.encode("utf-8", errors="replace")
+    headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
+    return Response(content=csv_bytes, media_type="text/csv; charset=utf-8", headers=headers)
 
 
 @router.post("/datasets/upload", response_model=DatasetCreateResponse)
@@ -321,6 +342,8 @@ def run_corpus_analysis(job_id: int, db: Session = Depends(get_db)):
 @router.get("/jobs/{job_id}/export/enriched.csv")
 def export_enriched(job_id: int, db: Session = Depends(get_db)):
     job = db.get(IngestionJob, job_id)
+    if not job:
+        raise HTTPException(404, "Job not found")
     rows = db.query(DatasetRow).filter(DatasetRow.dataset_id == job.dataset_id).all()
     out = []
     for row in rows:
@@ -341,12 +364,14 @@ def export_enriched(job_id: int, db: Session = Depends(get_db)):
             "analysis_json": fetch.article.analysis.analysis_json if fetch and fetch.article and fetch.article.analysis else None,
         })
         out.append(out_row)
-    return StreamingResponse(StringIO(pd.DataFrame(out).to_csv(index=False)), media_type="text/csv")
+    return build_csv_response(out, f"job_{job_id}_enriched.csv")
 
 
 @router.get("/jobs/{job_id}/export/failures.csv")
 def export_failures(job_id: int, db: Session = Depends(get_db)):
     job = db.get(IngestionJob, job_id)
+    if not job:
+        raise HTTPException(404, "Job not found")
     rows = db.query(DatasetRow).filter(DatasetRow.dataset_id == job.dataset_id).all()
     failures = []
     for row in rows:
@@ -354,7 +379,7 @@ def export_failures(job_id: int, db: Session = Depends(get_db)):
         text, source = row_text_and_source(row)
         if source == "missing":
             failures.append({"url": row.normalized_url, "extraction_status": fetch.extraction_status if fetch else "pending", "failure_reason": fetch.failure_reason if fetch else "missing_fetch"})
-    return StreamingResponse(StringIO(pd.DataFrame(failures).to_csv(index=False)), media_type="text/csv")
+    return build_csv_response(failures, f"job_{job_id}_failures.csv")
 
 
 @router.get("/jobs/{job_id}/export/aggregate.json")
