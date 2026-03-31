@@ -1,4 +1,4 @@
-from io import StringIO
+from io import BytesIO
 from threading import Thread
 import pandas as pd
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
@@ -44,11 +44,47 @@ def row_text_and_source(row: DatasetRow) -> tuple[str | None, str]:
     return None, "missing"
 
 
+def read_uploaded_csv(upload: UploadFile) -> pd.DataFrame:
+    raw = upload.file.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="Uploaded CSV is empty")
+
+    encodings = [
+        "utf-8",
+        "utf-8-sig",
+        "utf-16",
+        "utf-16-le",
+        "utf-16-be",
+        "utf-32",
+        "utf-32-le",
+        "utf-32-be",
+        "cp1252",
+        "latin1",
+    ]
+    for encoding in encodings:
+        try:
+            return pd.read_csv(
+                BytesIO(raw),
+                encoding=encoding,
+                sep=None,
+                engine="python",
+            )
+        except (UnicodeDecodeError, UnicodeError):
+            continue
+        except (pd.errors.ParserError, pd.errors.EmptyDataError):
+            continue
+
+    raise HTTPException(
+        status_code=400,
+        detail="Could not read uploaded CSV. Please export as CSV encoded as UTF-8/UTF-16/UTF-32/Windows-1252 and try again.",
+    )
+
+
 @router.post("/datasets/upload", response_model=DatasetCreateResponse)
 def upload_dataset(file: UploadFile = File(...), db: Session = Depends(get_db)):
     if not file.filename.endswith(".csv"):
         raise HTTPException(status_code=400, detail="Only CSV supported")
-    df = pd.read_csv(file.file)
+    df = read_uploaded_csv(file)
     cols = [str(c) for c in df.columns]
     dataset = Dataset(name=file.filename, original_filename=file.filename, intake_type="csv", detected_columns=cols, column_mapping=auto_map(cols))
     db.add(dataset)
