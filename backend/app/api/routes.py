@@ -13,6 +13,8 @@ from app.services.analysis import analyze_article, build_batch_report, report_to
 from app.workers.jobs import run_job
 from .csv_utils import read_uploaded_csv
 
+# Keep Meltwater-safe CSV parsing to avoid UTF-16/UTF-8 decode conflicts.
+
 router = APIRouter()
 
 CANONICAL_COLUMNS = {
@@ -49,6 +51,7 @@ def row_text_and_source(row: DatasetRow) -> tuple[str | None, str]:
 def upload_dataset(file: UploadFile = File(...), db: Session = Depends(get_db)):
     if not file.filename.endswith(".csv"):
         raise HTTPException(status_code=400, detail="Only CSV supported")
+    # Use resilient encoding fallback instead of raw pd.read_csv(file.file).
     df = read_uploaded_csv(file.file)
     cols = [str(c) for c in df.columns]
     dataset = Dataset(name=file.filename, original_filename=file.filename, intake_type="csv", detected_columns=cols, column_mapping=auto_map(cols))
