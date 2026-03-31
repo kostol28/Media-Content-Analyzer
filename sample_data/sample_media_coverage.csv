@@ -1,0 +1,4 @@
+URL,Title,Media Outlet,Date,Author,Brand,Tags
+https://example.com/news1,Brand launches AI feature,TechCrunch,2025-01-05,Jane Doe,Acme,"launch,ai"
+https://example.com/review2,Hands-on with Acme device,The Verge,2025-01-10,John Roe,Acme,"review,hardware"
+not-a-url,Broken row sample,Wired,2025-01-12,Alex Poe,Acme,"error"
